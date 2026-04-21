@@ -12,13 +12,19 @@ pub fn patch_static_runtime(root: &mut JsonValue, profile_dir: &Path) {
         return;
     };
 
-    object.insert("interface-name".to_string(), JsonValue::String(String::new()));
+    object.insert(
+        "interface-name".to_string(),
+        JsonValue::String(String::new()),
+    );
     object.insert("routing-mark".to_string(), JsonValue::from(0));
 
     if has_non_empty_string(object.get("external-controller"))
         || has_non_empty_string(object.get("external-controller-tls"))
     {
-        object.insert("external-ui".to_string(), JsonValue::String("./ui".to_string()));
+        object.insert(
+            "external-ui".to_string(),
+            JsonValue::String("./ui".to_string()),
+        );
     }
 
     let profile = ensure_object_field(object, "profile");
@@ -61,7 +67,10 @@ pub fn patch_static_runtime(root: &mut JsonValue, profile_dir: &Path) {
                     .collect(),
             ),
         );
-        dns.insert("enhanced-mode".to_string(), JsonValue::String("fake-ip".to_string()));
+        dns.insert(
+            "enhanced-mode".to_string(),
+            JsonValue::String("fake-ip".to_string()),
+        );
         dns.insert(
             "fake-ip-range".to_string(),
             JsonValue::String(DEFAULT_FAKE_IP_RANGE.to_string()),
@@ -88,7 +97,10 @@ pub fn patch_static_runtime(root: &mut JsonValue, profile_dir: &Path) {
     {
         let dns = ensure_object_field(object, "dns");
         let nameserver = ensure_array_field(dns, "nameserver");
-        if !nameserver.iter().any(|item| item.as_str() == Some("system://")) {
+        if !nameserver
+            .iter()
+            .any(|item| item.as_str() == Some("system://"))
+        {
             nameserver.push(JsonValue::String("system://".to_string()));
         }
     }
@@ -98,7 +110,10 @@ pub fn patch_static_runtime(root: &mut JsonValue, profile_dir: &Path) {
 }
 
 fn patch_listeners(object: &mut JsonMap<String, JsonValue>) {
-    let Some(listeners) = object.get_mut("listeners").and_then(JsonValue::as_array_mut) else {
+    let Some(listeners) = object
+        .get_mut("listeners")
+        .and_then(JsonValue::as_array_mut)
+    else {
         return;
     };
     listeners.retain(|listener| {
@@ -191,7 +206,9 @@ pub fn validate_provider_paths(
 
             let cleaned = clean_relative_path(candidate);
             if cleaned != candidate {
-                return Err(format!("{field}.{name} path contains invalid traversal segments: {path}"));
+                return Err(format!(
+                    "{field}.{name} path contains invalid traversal segments: {path}"
+                ));
             }
         }
     }
@@ -264,7 +281,9 @@ fn apply_field(
                 merge_raw_map(entry, &merge);
             }
         }
-        FieldBehavior::Rules => apply_list_field(target_object, base_key, ListStyle::Plain, operations),
+        FieldBehavior::Rules => {
+            apply_list_field(target_object, base_key, ListStyle::Plain, operations)
+        }
     }
 }
 
@@ -495,7 +514,12 @@ fn provider_extension(provider: &JsonMap<String, JsonValue>, prefix: &str) -> &'
     "yaml"
 }
 
-fn normalize_provider_path(path: &str, profile_dir: &Path, prefix: &str, extension: &str) -> String {
+fn normalize_provider_path(
+    path: &str,
+    profile_dir: &Path,
+    prefix: &str,
+    extension: &str,
+) -> String {
     let raw = Path::new(path);
     let profile_base = profile_dir.join("providers").join(prefix);
     if raw.is_absolute() && raw.starts_with(&profile_base) {

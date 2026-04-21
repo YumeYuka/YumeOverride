@@ -3,12 +3,19 @@ use std::path::Path;
 
 use crate::model::{LoadedOverride, OverrideSpec};
 
-pub fn load_overrides(overrides: &[OverrideSpec]) -> Result<Vec<LoadedOverride>, String> {
+pub struct LoadedOverrides {
+    pub items: Vec<LoadedOverride>,
+    pub warnings: Vec<String>,
+}
+
+pub fn load_overrides(overrides: &[OverrideSpec]) -> Result<LoadedOverrides, String> {
     let mut loaded = Vec::new();
+    let mut warnings = Vec::new();
     for override_spec in overrides {
         let content = fs::read_to_string(&override_spec.path)
             .map_err(|err| format!("read override file {}: {err}", override_spec.path))?;
         if content.trim().is_empty() {
+            warnings.push(format!("skip empty override file: {}", override_spec.path));
             continue;
         }
         loaded.push(LoadedOverride {
@@ -17,7 +24,10 @@ pub fn load_overrides(overrides: &[OverrideSpec]) -> Result<Vec<LoadedOverride>,
             content,
         });
     }
-    Ok(loaded)
+    Ok(LoadedOverrides {
+        items: loaded,
+        warnings,
+    })
 }
 
 pub fn write_atomic(path: &Path, bytes: &[u8]) -> Result<(), String> {

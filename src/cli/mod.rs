@@ -1,8 +1,8 @@
 use std::io::{self, Read, Write};
 
 use crate::compiler::compile_request;
+use crate::engine::yaml::{parse_yaml_to_json_string, stringify_json_to_yaml_string};
 use crate::model::{CliMode, CompileRequest, CompileResult};
-use crate::override_engine::yaml::{parse_yaml_to_json_string, stringify_json_to_yaml_string};
 
 pub fn run_cli() -> i32 {
     let mut args = std::env::args().skip(1);
@@ -12,11 +12,11 @@ pub fn run_cli() -> i32 {
         Some("helper") => return run_helper(args.next().as_deref()),
         Some(other) => {
             let _ = writeln!(io::stderr(), "unknown command: {other}");
-            let _ = writeln!(io::stderr(), "usage: rust2 <preview|compile>");
+            let _ = writeln!(io::stderr(), "usage: YumeOverride <preview|compile>");
             return 1;
         }
         None => {
-            let _ = writeln!(io::stderr(), "usage: rust2 <preview|compile>");
+            let _ = writeln!(io::stderr(), "usage: YumeOverride <preview|compile>");
             return 1;
         }
     };
@@ -35,7 +35,7 @@ pub fn run_cli() -> i32 {
 
     let success = result.is_ok();
     let payload = match result {
-        Ok(result) => success_result(result.fingerprint, result.final_yaml),
+        Ok(result) => encode_result(result),
         Err(err) => error_result(err),
     };
     let _ = writeln!(io::stdout(), "{payload}");
@@ -64,7 +64,10 @@ fn run_helper(helper_name: Option<&str>) -> i32 {
             return 1;
         }
         None => {
-            let _ = writeln!(io::stderr(), "usage: rust2 helper <yaml-parse|yaml-stringify>");
+            let _ = writeln!(
+                io::stderr(),
+                "usage: YumeOverride helper <yaml-parse|yaml-stringify>"
+            );
             return 1;
         }
     };
@@ -92,13 +95,7 @@ fn error_result(message: impl Into<String>) -> String {
     .unwrap_or_else(|_| "{\"success\":false,\"fingerprint\":\"\",\"finalYaml\":\"\",\"warnings\":[],\"error\":\"override processor failed\"}".to_string())
 }
 
-fn success_result(fingerprint: String, final_yaml: String) -> String {
-    serde_json::to_string(&CompileResult {
-        success: true,
-        fingerprint,
-        final_yaml,
-        warnings: Vec::new(),
-        error: None,
-    })
+fn encode_result(result: CompileResult) -> String {
+    serde_json::to_string(&result)
     .unwrap_or_else(|_| "{\"success\":false,\"fingerprint\":\"\",\"finalYaml\":\"\",\"warnings\":[],\"error\":\"override result encode failed\"}".to_string())
 }

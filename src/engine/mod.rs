@@ -6,7 +6,16 @@ use serde_json::Value as JsonValue;
 use crate::compiler::patch::apply_override_document;
 use crate::model::LoadedOverride;
 
-pub fn apply_overrides(mut root: JsonValue, overrides: &[LoadedOverride]) -> Result<JsonValue, String> {
+pub struct ApplyOverridesResult {
+    pub root: JsonValue,
+    pub warnings: Vec<String>,
+}
+
+pub fn apply_overrides(
+    mut root: JsonValue,
+    overrides: &[LoadedOverride],
+) -> Result<ApplyOverridesResult, String> {
+    let mut warnings = Vec::new();
     for override_item in overrides {
         match override_item.ext.as_str() {
             "yaml" | "yml" => {
@@ -14,12 +23,14 @@ pub fn apply_overrides(mut root: JsonValue, overrides: &[LoadedOverride]) -> Res
                 apply_override_document(&mut root, &patch);
             }
             "js" => {
-                root = js::apply_js_override(root, override_item)?;
+                let outcome = js::apply_js_override(root, override_item);
+                root = outcome.root;
+                warnings.extend(outcome.warnings);
             }
             other => {
                 return Err(format!("unsupported override extension: {other}"));
             }
         }
     }
-    Ok(root)
+    Ok(ApplyOverridesResult { root, warnings })
 }

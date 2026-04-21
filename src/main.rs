@@ -1,3 +1,3 @@
 fn main() {
-    std::process::exit(yumebox_runtime_compiler::run_cli());
+    std::process::exit(yume_override::run_cli());
 }

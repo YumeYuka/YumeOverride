@@ -13,7 +13,8 @@ pub struct CompileRequest {
     pub profile_path: String,
     #[serde(default)]
     pub overrides: Vec<OverrideSpec>,
-    pub output_path: Option<String>,
+    #[serde(default)]
+    pub output_path: String,
 }
 
 #[derive(Debug, Serialize)]

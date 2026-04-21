@@ -3,7 +3,8 @@ use serde_yaml::Value as YamlValue;
 
 pub fn parse_yaml_override(content: &str) -> Result<JsonValue, String> {
     let processed_content = add_yaml_tags_to_proxies_short_id(content, false);
-    let value: YamlValue = serde_yaml::from_str(&processed_content).map_err(|err| err.to_string())?;
+    let value: YamlValue =
+        serde_yaml::from_str(&processed_content).map_err(|err| err.to_string())?;
     serde_json::to_value(value).map_err(|err| err.to_string())
 }
 
@@ -17,7 +18,10 @@ pub fn stringify_json_to_yaml_string(content: &str) -> Result<String, String> {
     serde_yaml::to_string(&json_value).map_err(|err| err.to_string())
 }
 
-pub fn add_yaml_tags_to_proxies_short_id(yaml_content: &str, include_nested_proxies: bool) -> String {
+pub fn add_yaml_tags_to_proxies_short_id(
+    yaml_content: &str,
+    include_nested_proxies: bool,
+) -> String {
     if !yaml_content.contains("proxies:") || !yaml_content.contains("short-id:") {
         return yaml_content.to_string();
     }
