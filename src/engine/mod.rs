@@ -19,7 +19,8 @@ pub fn apply_overrides(
     for override_item in overrides {
         match override_item.ext.as_str() {
             "yaml" | "yml" => {
-                let patch = yaml::parse_yaml_override(&override_item.content)?;
+                let patch = yaml::parse_yaml_override(&override_item.content)
+                    .map_err(|error| format!("parse yaml override {}: {}", override_item.path, error))?;
                 apply_override_document(&mut root, &patch);
             }
             "js" => {

@@ -138,8 +138,6 @@ pub fn patch_providers(object: &mut JsonMap<String, JsonValue>, profile_dir: &Pa
             let extension = provider_extension(provider_object, prefix);
             if let Some(path) = provider_object.get("path").and_then(JsonValue::as_str) {
                 if !path.trim().is_empty() {
-                    let normalized = normalize_provider_path(path, profile_dir, prefix, extension);
-                    provider_object.insert("path".to_string(), JsonValue::String(normalized));
                     continue;
                 }
             }
@@ -178,6 +176,7 @@ pub fn validate_provider_paths(
             continue;
         };
         let expected_base = Path::new("providers").join(prefix);
+        let expected_display = format!("./{}", expected_base.to_string_lossy().replace('\\', "/"));
         for (name, provider) in providers {
             let provider_object = provider
                 .as_object()
@@ -197,17 +196,20 @@ pub fn validate_provider_paths(
             }
             let path = path.ok_or_else(|| format!("{field}.{name} missing normalized path"))?;
             let candidate = Path::new(path);
-            if candidate.is_absolute() || !candidate.starts_with(&expected_base) {
+            if candidate.is_absolute() {
                 return Err(format!(
-                    "{field}.{name} path escaped profile scope: {path} (expected relative path under {})",
-                    expected_base.to_string_lossy().replace('\\', "/")
+                    "{field}.{name} path escaped profile scope: {path} (expected relative path under {expected_display})",
                 ));
             }
-
-            let cleaned = clean_relative_path(candidate);
-            if cleaned != candidate {
+            if contains_parent_traversal(candidate) {
                 return Err(format!(
                     "{field}.{name} path contains invalid traversal segments: {path}"
+                ));
+            }
+            let cleaned = clean_relative_path(candidate);
+            if !cleaned.starts_with(&expected_base) {
+                return Err(format!(
+                    "{field}.{name} path escaped profile scope: {path} (expected relative path under {expected_display})",
                 ));
             }
         }
@@ -514,40 +516,21 @@ fn provider_extension(provider: &JsonMap<String, JsonValue>, prefix: &str) -> &'
     "yaml"
 }
 
-fn normalize_provider_path(
-    path: &str,
-    profile_dir: &Path,
-    prefix: &str,
-    extension: &str,
-) -> String {
-    let raw = Path::new(path);
-    let profile_base = profile_dir.join("providers").join(prefix);
-    if raw.is_absolute() && raw.starts_with(&profile_base) {
-        if let Ok(relative) = raw.strip_prefix(profile_dir) {
-            return clean_provider_relative_path(relative, prefix, extension);
-        }
-    }
-    let cleaned = if raw.is_absolute() {
-        raw.file_name().map(PathBuf::from).unwrap_or_default()
-    } else {
-        trim_provider_prefix(clean_relative_path(raw))
-    };
-    clean_provider_relative_path(&cleaned, prefix, extension)
-}
-
 fn profile_provider_path(profile_dir: &Path, prefix: &str, relative: &Path) -> String {
+    let _ = profile_dir;
     let tail = if relative.as_os_str().is_empty() {
         PathBuf::from("provider.yaml")
     } else {
         relative.to_path_buf()
     };
-    profile_dir
-        .join("providers")
+    format!(
+        "./{}",
+        Path::new("providers")
         .join(prefix)
         .join(tail)
         .to_string_lossy()
         .replace('\\', "/")
-        .to_string()
+    )
 }
 
 fn clean_relative_path(path: &Path) -> PathBuf {
@@ -566,63 +549,10 @@ fn clean_relative_path(path: &Path) -> PathBuf {
     cleaned
 }
 
-fn trim_provider_prefix(mut path: PathBuf) -> PathBuf {
-    loop {
-        let first = match path.iter().next() {
-            Some(value) => value.to_string_lossy(),
-            None => break,
-        };
-        if first == "providers" || first == "provider" || first == "clash" {
-            if let Ok(rest) = path.strip_prefix(Path::new(&first.to_string())) {
-                path = rest.to_path_buf();
-                continue;
-            }
-        }
-        if first == "ruleset" || first == "rules" || first == "proxies" {
-            if let Ok(rest) = path.strip_prefix(Path::new(&first.to_string())) {
-                path = rest.to_path_buf();
-                continue;
-            }
-        }
-        break;
-    }
-    path
-}
-
-fn ensure_provider_extension(path: PathBuf, extension: &str) -> PathBuf {
-    if path.as_os_str().is_empty() {
-        return PathBuf::from(format!("provider.{extension}"));
-    }
-    if path.extension().is_some() {
-        return path;
-    }
-    PathBuf::from(format!("{}.{}", path.to_string_lossy(), extension))
-}
-
-fn clean_provider_relative_path(path: &Path, prefix: &str, extension: &str) -> String {
-    let trimmed = trim_provider_prefix(clean_relative_path(path));
-    let normalized = ensure_provider_scope(trimmed, prefix);
-    let normalized = ensure_provider_extension(normalized, extension);
-    normalized.to_string_lossy().replace('\\', "/").to_string()
-}
-
-fn ensure_provider_scope(path: PathBuf, prefix: &str) -> PathBuf {
-    if path.as_os_str().is_empty() {
-        return PathBuf::from("providers").join(prefix);
-    }
-
-    let normalized_prefix = Path::new("providers").join(prefix);
-    if path.starts_with(&normalized_prefix) {
-        return path;
-    }
-
-    Path::new(prefix)
-        .join(&path)
-        .components()
-        .collect::<PathBuf>()
-        .strip_prefix(prefix)
-        .map(|relative| normalized_prefix.join(relative))
-        .unwrap_or_else(|_| normalized_prefix.join(path))
+fn contains_parent_traversal(path: &Path) -> bool {
+    use std::path::Component;
+    path.components()
+        .any(|component| matches!(component, Component::ParentDir))
 }
 
 fn ensure_object_field<'a>(

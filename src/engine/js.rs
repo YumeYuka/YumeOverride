@@ -73,6 +73,10 @@ pub fn apply_js_override(root: JsonValue, override_item: &LoadedOverride) -> JsO
     }
 }
 
+fn js_string_value(value: &str) -> JsValue {
+    JsValue::new(js_string!(value))
+}
+
 fn try_apply_js_override(
     root: JsonValue,
     override_item: &LoadedOverride,
@@ -86,21 +90,21 @@ fn try_apply_js_override(
     context
         .register_global_property(
             js_string!("__profileJson"),
-            JsValue::String(js_string!(profile_json.as_str())),
+            js_string_value(&profile_json),
             Attribute::all(),
         )
         .map_err(|err| format!("register __profileJson failed: {err}"))?;
     context
         .register_global_property(
             js_string!("__overridePath"),
-            JsValue::String(js_string!(override_item.path.as_str())),
+            js_string_value(&override_item.path),
             Attribute::all(),
         )
         .map_err(|err| format!("register __overridePath failed: {err}"))?;
     context
         .register_global_property(
             js_string!("__overrideLogPath"),
-            JsValue::String(js_string!(log_path.to_string_lossy().as_ref())),
+            js_string_value(log_path.to_string_lossy().as_ref()),
             Attribute::all(),
         )
         .map_err(|err| format!("register __overrideLogPath failed: {err}"))?;
@@ -123,7 +127,8 @@ fn try_apply_js_override(
     let resolved = resolve_main_result(result, &mut context)?;
     let result_json = resolved
         .to_json(&mut context)
-        .map_err(|err| format!("convert JS override result to json: {err}"))?;
+        .map_err(|err| format!("convert JS override result to json: {err}"))?
+        .ok_or_else(|| "JS override result cannot be converted to json".to_string())?;
     if !result_json.is_object() {
         return Err("JS override result must be an object".to_string());
     }
@@ -142,7 +147,7 @@ fn register_native_helpers(context: &mut Context) -> Result<(), String> {
                 .to_std_string_escaped();
             let payload =
                 crate::engine::yaml::parse_yaml_to_json_string(&content).map_err(js_error)?;
-            Ok(JsValue::String(js_string!(payload.as_str())))
+            Ok(js_string_value(&payload))
         }),
     )
     .name("__yamlParseNative")
@@ -167,7 +172,7 @@ fn register_native_helpers(context: &mut Context) -> Result<(), String> {
                 .to_std_string_escaped();
             let payload =
                 crate::engine::yaml::stringify_json_to_yaml_string(&content).map_err(js_error)?;
-            Ok(JsValue::String(js_string!(payload.as_str())))
+            Ok(js_string_value(&payload))
         }),
     )
     .name("__yamlStringifyNative")
@@ -191,7 +196,7 @@ fn register_native_helpers(context: &mut Context) -> Result<(), String> {
                 .to_string(context)?
                 .to_std_string_escaped();
             let decoded = base64_decode_string(&content).map_err(js_error)?;
-            Ok(JsValue::String(js_string!(decoded.as_str())))
+            Ok(js_string_value(&decoded))
         }),
     )
     .name("__b64dNative")
@@ -211,7 +216,7 @@ fn register_native_helpers(context: &mut Context) -> Result<(), String> {
                 .to_string(context)?
                 .to_std_string_escaped();
             let encoded = base64_encode_string(content.as_bytes());
-            Ok(JsValue::String(js_string!(encoded.as_str())))
+            Ok(js_string_value(&encoded))
         }),
     )
     .name("__b64eNative")
@@ -265,7 +270,7 @@ fn register_native_helpers(context: &mut Context) -> Result<(), String> {
             let payload = execute_fetch(request).map_err(js_error)?;
             let payload_json =
                 serde_json::to_string(&payload).map_err(|err| js_error(err.to_string()))?;
-            Ok(JsValue::String(js_string!(payload_json.as_str())))
+            Ok(js_string_value(&payload_json))
         }),
     )
     .name("__fetchNative")
@@ -464,7 +469,7 @@ fn js_error(message: String) -> boa_engine::JsError {
 }
 
 fn resolve_main_result(result: JsValue, context: &mut Context) -> Result<JsValue, String> {
-    let Some(object) = result.as_object().cloned() else {
+    let Some(object) = result.as_object() else {
         return Ok(result);
     };
     let promise = match JsPromise::from_object(object) {
@@ -472,7 +477,9 @@ fn resolve_main_result(result: JsValue, context: &mut Context) -> Result<JsValue
         Err(_) => return Ok(result),
     };
     for _ in 0..MAX_PROMISE_JOB_PASSES {
-        context.run_jobs();
+        context
+            .run_jobs()
+            .map_err(|err| format!("run JS promise jobs failed: {err}"))?;
         match promise.state() {
             PromiseState::Pending => continue,
             PromiseState::Fulfilled(value) => return Ok(value),

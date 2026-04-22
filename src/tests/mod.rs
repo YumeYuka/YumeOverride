@@ -107,6 +107,23 @@ fn yaml_override_is_applied_with_merge_order() {
 }
 
 #[test]
+fn yaml_override_parse_error_includes_override_path() {
+    let root = json!({ "mode": "rule" });
+    let overrides = vec![LoadedOverride {
+        path: "/tmp/custom-routing.yaml".to_string(),
+        ext: "yaml".to_string(),
+        content: "proxy-groups:\n  -\n  name: Proxy\n".to_string(),
+    }];
+
+    let error = engine::apply_overrides(root, &overrides)
+        .expect_err("broken yaml override should fail");
+    assert!(
+        error.contains("/tmp/custom-routing.yaml"),
+        "unexpected error message: {error}"
+    );
+}
+
+#[test]
 fn js_override_can_use_yaml_helpers() {
     let root = json!({ "mode": "rule" });
     let overrides = vec![LoadedOverride {
@@ -304,7 +321,7 @@ fn compile_request_emits_warning_for_empty_override_file() {
 }
 
 #[test]
-fn compile_request_normalizes_provider_paths_to_relative_scope() {
+fn compile_request_preserves_existing_provider_path() {
     let temp_dir = std::env::temp_dir().join(format!(
         "yumebox-provider-path-test-{}",
         std::time::SystemTime::now()
@@ -325,7 +342,7 @@ rule-providers:
   geolocation-!cn:
     type: http
     url: https://example.com/geolocation-!cn.yaml
-    path: Y:/RiderProjects/YumeBox-Desktop/override/providers/rules/geolocation-!cn.yaml
+    path: providers/rules/geolocation-!cn.yaml
     behavior: domain
     interval: 86400
     format: yaml
@@ -347,6 +364,55 @@ rule-providers:
     assert_eq!(
         root["rule-providers"]["geolocation-!cn"]["path"].as_str(),
         Some("providers/rules/geolocation-!cn.yaml")
+    );
+
+    let _ = fs::remove_dir_all(&temp_dir);
+}
+
+#[test]
+fn compile_request_preserves_existing_dot_provider_path() {
+    let temp_dir = std::env::temp_dir().join(format!(
+        "yumebox-provider-relative-test-{}",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("system time before unix epoch")
+            .as_nanos()
+    ));
+    fs::create_dir_all(&temp_dir).expect("create temp profile dir");
+
+    let profile_path = temp_dir.join("profile.yaml");
+    fs::write(
+        &profile_path,
+        r#"
+mode: rule
+rules:
+  - RULE-SET,ads_domain,REJECT
+rule-providers:
+  ads_domain:
+    type: http
+    url: https://example.com/ads_domain.mrs
+    path: ./providers/rules/ads_domain.mrs
+    behavior: domain
+    interval: 86400
+    format: mrs
+"#,
+    )
+    .expect("write profile yaml");
+
+    let request = CompileRequest {
+        schema_version: REQUEST_SCHEMA_VERSION,
+        profile_uuid: "test-profile".to_string(),
+        profile_dir: temp_dir.to_string_lossy().into_owned(),
+        profile_path: profile_path.to_string_lossy().into_owned(),
+        overrides: Vec::new(),
+        output_path: String::new(),
+    };
+
+    let result = compile_request(request, false).expect("compile request should succeed");
+    let root: JsonValue = serde_yaml::from_str(&result.final_yaml).expect("parse final yaml");
+    assert_eq!(
+        root["rule-providers"]["ads_domain"]["path"].as_str(),
+        Some("./providers/rules/ads_domain.mrs")
     );
 
     let _ = fs::remove_dir_all(&temp_dir);
