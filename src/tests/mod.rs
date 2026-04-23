@@ -361,9 +361,15 @@ rule-providers:
 
     let result = compile_request(request, false).expect("compile request should succeed");
     let root: JsonValue = serde_yaml::from_str(&result.final_yaml).expect("parse final yaml");
+    let expected_path = temp_dir
+        .join("providers")
+        .join("rules")
+        .join("geolocation-!cn.yaml")
+        .to_string_lossy()
+        .replace('\\', "/");
     assert_eq!(
         root["rule-providers"]["geolocation-!cn"]["path"].as_str(),
-        Some("providers/rules/geolocation-!cn.yaml")
+        Some(expected_path.as_str())
     );
 
     let _ = fs::remove_dir_all(&temp_dir);
@@ -410,9 +416,135 @@ rule-providers:
 
     let result = compile_request(request, false).expect("compile request should succeed");
     let root: JsonValue = serde_yaml::from_str(&result.final_yaml).expect("parse final yaml");
+    let expected_path = temp_dir
+        .join("providers")
+        .join("rules")
+        .join("ads_domain.mrs")
+        .to_string_lossy()
+        .replace('\\', "/");
     assert_eq!(
         root["rule-providers"]["ads_domain"]["path"].as_str(),
-        Some("./providers/rules/ads_domain.mrs")
+        Some(expected_path.as_str())
+    );
+
+    let _ = fs::remove_dir_all(&temp_dir);
+}
+
+#[test]
+fn compile_request_rewrites_legacy_ruleset_provider_path() {
+    let temp_dir = std::env::temp_dir().join(format!(
+        "yumebox-provider-legacy-path-test-{}",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("system time before unix epoch")
+            .as_nanos()
+    ));
+    fs::create_dir_all(&temp_dir).expect("create temp profile dir");
+
+    let profile_path = temp_dir.join("profile.yaml");
+    fs::write(
+        &profile_path,
+        r#"
+mode: rule
+rules:
+  - RULE-SET,advertising,REJECT
+rule-providers:
+  advertising:
+    type: http
+    url: https://example.com/advertising.yaml
+    path: ./ruleset/advertising.yaml
+    behavior: domain
+    interval: 86400
+    format: yaml
+"#,
+    )
+    .expect("write profile yaml");
+
+    let request = CompileRequest {
+        schema_version: REQUEST_SCHEMA_VERSION,
+        profile_uuid: "test-profile".to_string(),
+        profile_dir: temp_dir.to_string_lossy().into_owned(),
+        profile_path: profile_path.to_string_lossy().into_owned(),
+        overrides: Vec::new(),
+        output_path: String::new(),
+    };
+
+    let result = compile_request(request, false).expect("compile request should succeed");
+    let root: JsonValue = serde_yaml::from_str(&result.final_yaml).expect("parse final yaml");
+    let expected_path = temp_dir
+        .join("providers")
+        .join("rules")
+        .join("advertising.yaml")
+        .to_string_lossy()
+        .replace('\\', "/");
+    assert_eq!(
+        root["rule-providers"]["advertising"]["path"].as_str(),
+        Some(expected_path.as_str())
+    );
+
+    let _ = fs::remove_dir_all(&temp_dir);
+}
+
+#[test]
+fn compile_request_normalizes_absolute_provider_path_to_profile_scope() {
+    let temp_dir = std::env::temp_dir().join(format!(
+        "yumebox-provider-absolute-path-test-{}",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("system time before unix epoch")
+            .as_nanos()
+    ));
+    fs::create_dir_all(&temp_dir).expect("create temp profile dir");
+
+    let provider_path = temp_dir
+        .join("providers")
+        .join("rules")
+        .join("geolocation-!cn.yaml");
+    fs::create_dir_all(provider_path.parent().expect("provider parent")).expect("create provider dir");
+    fs::write(&provider_path, "payload").expect("write provider file");
+
+    let profile_path = temp_dir.join("profile.yaml");
+    fs::write(
+        &profile_path,
+        format!(
+            r#"
+mode: rule
+rules:
+  - RULE-SET,geolocation-!cn,PROXY
+rule-providers:
+  geolocation-!cn:
+    type: http
+    url: https://example.com/geolocation-!cn.yaml
+    path: {}
+    behavior: domain
+    interval: 86400
+    format: yaml
+"#,
+            provider_path.to_string_lossy().replace('\\', "/"),
+        ),
+    )
+    .expect("write profile yaml");
+
+    let request = CompileRequest {
+        schema_version: REQUEST_SCHEMA_VERSION,
+        profile_uuid: "test-profile".to_string(),
+        profile_dir: temp_dir.to_string_lossy().into_owned(),
+        profile_path: profile_path.to_string_lossy().into_owned(),
+        overrides: Vec::new(),
+        output_path: String::new(),
+    };
+
+    let result = compile_request(request, false).expect("compile request should succeed");
+    let root: JsonValue = serde_yaml::from_str(&result.final_yaml).expect("parse final yaml");
+    let expected_path = temp_dir
+        .join("providers")
+        .join("rules")
+        .join("geolocation-!cn.yaml")
+        .to_string_lossy()
+        .replace('\\', "/");
+    assert_eq!(
+        root["rule-providers"]["geolocation-!cn"]["path"].as_str(),
+        Some(expected_path.as_str())
     );
 
     let _ = fs::remove_dir_all(&temp_dir);
