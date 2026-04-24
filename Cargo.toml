@@ -20,11 +20,12 @@ serde_yaml = "0.9"
 sha2 = "0.10"
 
 [profile.release]
-opt-level = 3
+opt-level = "z"
 lto = "fat"
 panic = "abort"
 codegen-units = 1
-strip = true
+strip = "symbols"
 debug = false
 incremental = false
 overflow-checks = false
+debug-assertions = false
