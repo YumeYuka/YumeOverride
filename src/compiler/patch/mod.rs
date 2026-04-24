@@ -174,11 +174,12 @@ pub fn validate_provider_paths(
     object: &JsonMap<String, JsonValue>,
     profile_dir: &Path,
 ) -> Result<(), String> {
+    let runtime_home = runtime_home_dir(profile_dir);
     for (field, prefix) in [("proxy-providers", "proxies"), ("rule-providers", "rules")] {
         let Some(providers) = object.get(field).and_then(JsonValue::as_object) else {
             continue;
         };
-        let expected_base = profile_dir.join("providers").join(prefix);
+        let expected_base = normalize_path(profile_dir.join("providers").join(prefix));
         for (name, provider) in providers {
             let provider_object = provider
                 .as_object()
@@ -198,7 +199,12 @@ pub fn validate_provider_paths(
             }
             let path = path.ok_or_else(|| format!("{field}.{name} missing normalized path"))?;
             let candidate = Path::new(path);
-            if !candidate.is_absolute() || !candidate.starts_with(&expected_base) {
+            let resolved_candidate = if candidate.is_absolute() {
+                candidate.to_path_buf()
+            } else {
+                normalize_path(runtime_home.join(candidate))
+            };
+            if candidate.is_absolute() || !resolved_candidate.starts_with(&expected_base) {
                 return Err(format!(
                     "{field}.{name} path escaped profile scope: {path} (expected under {})",
                     expected_base.to_string_lossy()
@@ -517,7 +523,7 @@ fn normalize_provider_path(
     let raw = Path::new(path);
     let profile_base = profile_dir.join("providers").join(prefix);
     if raw.is_absolute() && raw.starts_with(&profile_base) {
-        return raw.to_string_lossy().replace('\\', "/").to_string();
+        return relative_to_runtime_home(profile_dir, raw);
     }
     let cleaned = if raw.is_absolute() {
         raw.file_name().map(PathBuf::from).unwrap_or_default()
@@ -535,10 +541,14 @@ fn profile_provider_path(profile_dir: &Path, prefix: &str, relative: &Path) -> S
     } else {
         relative.to_path_buf()
     };
-    profile_dir
-        .join("providers")
-        .join(prefix)
-        .join(tail)
+    let provider_path = profile_dir.join("providers").join(prefix).join(tail);
+    relative_to_runtime_home(profile_dir, &provider_path)
+}
+
+fn relative_to_runtime_home(profile_dir: &Path, path: &Path) -> String {
+    let runtime_home = runtime_home_dir(profile_dir);
+    relative_path_from(&normalize_path(path), &normalize_path(runtime_home))
+        .unwrap_or_else(|| path.to_path_buf())
         .to_string_lossy()
         .replace('\\', "/")
         .to_string()
@@ -591,6 +601,59 @@ fn clean_relative_path(path: &Path) -> PathBuf {
         }
     }
     cleaned
+}
+
+fn runtime_home_dir(profile_dir: &Path) -> PathBuf {
+    profile_dir
+        .parent()
+        .and_then(Path::parent)
+        .map(|files_dir| files_dir.join("mihomo"))
+        .unwrap_or_else(|| profile_dir.to_path_buf())
+}
+
+fn relative_path_from(path: &Path, base: &Path) -> Option<PathBuf> {
+    use std::path::Component;
+    let path_components = path.components().collect::<Vec<_>>();
+    let base_components = base.components().collect::<Vec<_>>();
+
+    let mut common_count = 0;
+    while common_count < path_components.len()
+        && common_count < base_components.len()
+        && path_components[common_count] == base_components[common_count]
+    {
+        common_count += 1;
+    }
+
+    if common_count == 0 {
+        return None;
+    }
+
+    let mut result = PathBuf::new();
+    for component in &base_components[common_count..] {
+        if matches!(component, Component::Normal(_)) {
+            result.push("..");
+        }
+    }
+    for component in &path_components[common_count..] {
+        result.push(component.as_os_str());
+    }
+    Some(result)
+}
+
+fn normalize_path(path: impl AsRef<Path>) -> PathBuf {
+    use std::path::Component;
+    let mut normalized = PathBuf::new();
+    for component in path.as_ref().components() {
+        match component {
+            Component::CurDir => continue,
+            Component::ParentDir => {
+                normalized.pop();
+            }
+            Component::Normal(part) => normalized.push(part),
+            Component::RootDir | Component::Prefix(_) => normalized.push(component.as_os_str()),
+        }
+    }
+    normalized
 }
 
 fn ensure_object_field<'a>(
