@@ -23,6 +23,33 @@ pub fn compile_request(
         ));
     }
 
+    // When there are no overrides, just copy the config file directly.
+    // This preserves encrypted configs — Go's LoadCompiled will decrypt at runtime.
+    if request.overrides.is_empty() && write_output {
+        let output_path = request.output_path.trim();
+        if output_path.is_empty() {
+            return Err("compile mode requires outputPath".to_string());
+        }
+        fs::copy(&request.profile_path, output_path)
+            .map_err(|err| format!("copy profile yaml: {err}"))?;
+        let source_bytes = fs::read(&request.profile_path)
+            .map_err(|err| format!("read profile yaml for fingerprint: {err}"))?;
+        let fingerprint = {
+            let mut hasher = Sha256::new();
+            hasher.update(request.profile_uuid.as_bytes());
+            hasher.update(&source_bytes);
+            format!("{:x}", hasher.finalize())
+        };
+        return Ok(CompileResult {
+            success: true,
+            fingerprint,
+            final_yaml: String::new(),
+            warnings: Vec::new(),
+            error: None,
+        });
+    }
+
+    // When there are overrides, parse the YAML and apply them.
     let source_yaml = fs::read_to_string(&request.profile_path)
         .map_err(|err| format!("read profile yaml: {err}"))?;
     let source_value: YamlValue =
