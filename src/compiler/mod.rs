@@ -79,8 +79,7 @@ fn compile_root(request: &CompileRequest) -> Result<CompiledRoot, String> {
         ));
     }
 
-    let source_yaml = load_source_yaml(request)?;
-    let encrypted = request.age_secret_key.is_some();
+    let (source_yaml, encrypted) = load_source_yaml(request)?;
     let source_value: YamlValue =
         serde_yaml::from_str(&source_yaml).map_err(|err| format!("parse source yaml: {err}"))?;
     let mut root: JsonValue = serde_json::to_value(source_value)
@@ -111,15 +110,18 @@ fn compile_root(request: &CompileRequest) -> Result<CompiledRoot, String> {
     })
 }
 
-fn load_source_yaml(request: &CompileRequest) -> Result<String, String> {
+fn load_source_yaml(request: &CompileRequest) -> Result<(String, bool), String> {
     let source_bytes =
         fs::read(&request.profile_path).map_err(|err| format!("read profile yaml: {err}"))?;
-    let plaintext = if is_age_encrypted(&source_bytes) {
+    let encrypted = is_age_encrypted(&source_bytes);
+    let plaintext = if encrypted {
         decrypt_age_source(&source_bytes, request.age_secret_key.as_deref())?
     } else {
         source_bytes
     };
-    String::from_utf8(plaintext).map_err(|err| format!("source yaml is not utf-8: {err}"))
+    let source_yaml =
+        String::from_utf8(plaintext).map_err(|err| format!("source yaml is not utf-8: {err}"))?;
+    Ok((source_yaml, encrypted))
 }
 
 fn is_age_encrypted(bytes: &[u8]) -> bool {
