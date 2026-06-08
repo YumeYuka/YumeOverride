@@ -15,6 +15,8 @@ pub struct CompileRequest {
     pub overrides: Vec<OverrideSpec>,
     #[serde(default)]
     pub output_path: String,
+    #[serde(default)]
+    pub age_secret_key: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -23,6 +25,16 @@ pub struct CompileResult {
     pub success: bool,
     pub fingerprint: String,
     pub final_yaml: String,
+    pub warnings: Vec<String>,
+    pub error: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CompileRawResult {
+    pub success: bool,
+    pub fingerprint: String,
+    pub config_raw: String,
     pub warnings: Vec<String>,
     pub error: Option<String>,
 }

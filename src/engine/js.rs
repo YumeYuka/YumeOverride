@@ -42,7 +42,11 @@ struct FetchResponsePayload {
     body: String,
 }
 
-pub fn apply_js_override(root: JsonValue, override_item: &LoadedOverride) -> JsOverrideOutcome {
+pub fn apply_js_override(
+    root: JsonValue,
+    override_item: &LoadedOverride,
+    encrypted: bool,
+) -> JsOverrideOutcome {
     let log_path = override_log_path(&override_item.path);
     let mut warnings = Vec::new();
     if let Err(err) = reset_override_log(&log_path) {
@@ -54,7 +58,7 @@ pub fn apply_js_override(root: JsonValue, override_item: &LoadedOverride) -> JsO
     let _ = append_override_log(&log_path, "info", "开始执行脚本");
 
     let original_root = root.clone();
-    match try_apply_js_override(root, override_item, &log_path) {
+    match try_apply_js_override(root, override_item, &log_path, encrypted) {
         Ok(next_root) => {
             let _ = append_override_log(&log_path, "info", "脚本执行成功");
             JsOverrideOutcome {
@@ -81,6 +85,7 @@ fn try_apply_js_override(
     root: JsonValue,
     override_item: &LoadedOverride,
     log_path: &Path,
+    encrypted: bool,
 ) -> Result<JsonValue, String> {
     let profile_json =
         serde_json::to_string(&root).map_err(|err| format!("encode profile payload: {err}"))?;
@@ -108,6 +113,13 @@ fn try_apply_js_override(
             Attribute::all(),
         )
         .map_err(|err| format!("register __overrideLogPath failed: {err}"))?;
+    context
+        .register_global_property(
+            js_string!("__encrypted"),
+            js_string_value(if encrypted { "true" } else { "false" }),
+            Attribute::all(),
+        )
+        .map_err(|err| format!("register __encrypted failed: {err}"))?;
 
     evaluate(&mut context, helper_script(), "override helper")?;
     evaluate(&mut context, &override_item.content, &override_item.path)?;
@@ -348,11 +360,15 @@ const deepMerge = (target, other, isOverride = true) => {
 };
 const formatLogValue = (value) => {
   if (value instanceof Error) {
-    return `${value.name}: ${value.message}\n${value.stack}`;
+    return `${value.name}: ${value.message}`;
   }
   try {
     const serialized = JSON.stringify(value);
-    return serialized === undefined ? String(value) : serialized;
+    const text = serialized === undefined ? String(value) : serialized;
+    if (__encrypted === "true" && text.length > 256) {
+      return text.slice(0, 256) + "...(truncated, encrypted profile)";
+    }
+    return text;
   } catch (error) {
     return String(value);
   }

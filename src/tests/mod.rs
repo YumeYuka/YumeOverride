@@ -2,13 +2,80 @@ use serde_json::{json, Value as JsonValue};
 use std::fs;
 use std::io::{Read, Write};
 use std::net::TcpListener;
+use std::path::{Path, PathBuf};
 use std::thread;
 
-use crate::compiler::compile_request;
 use crate::compiler::normalize::normalize_root;
+use crate::compiler::{compile_raw_request, compile_request};
 use crate::engine;
 use crate::engine::yaml::add_yaml_tags_to_proxies_short_id;
 use crate::model::{CompileRequest, LoadedOverride, REQUEST_SCHEMA_VERSION};
+use age::secrecy::ExposeSecret;
+
+fn test_request(profile_dir: &Path, profile_path: &Path) -> CompileRequest {
+    CompileRequest {
+        schema_version: REQUEST_SCHEMA_VERSION,
+        profile_uuid: "test-profile".to_string(),
+        profile_dir: profile_dir.to_string_lossy().into_owned(),
+        profile_path: profile_path.to_string_lossy().into_owned(),
+        overrides: Vec::new(),
+        output_path: String::new(),
+        age_secret_key: None,
+    }
+}
+
+fn provider_path_from_runtime_home(profile_dir: &Path, file_name: &str) -> String {
+    let runtime_home = profile_dir
+        .parent()
+        .and_then(Path::parent)
+        .map(|files_dir| files_dir.join("mihomo"))
+        .unwrap_or_else(|| profile_dir.to_path_buf());
+    let provider_path = profile_dir.join("providers").join("rules").join(file_name);
+    relative_path_from(&provider_path, &runtime_home)
+        .unwrap_or(provider_path)
+        .to_string_lossy()
+        .replace('\\', "/")
+}
+
+fn relative_path_from(path: &Path, base: &Path) -> Option<PathBuf> {
+    use std::path::Component;
+    let path_components = path.components().collect::<Vec<_>>();
+    let base_components = base.components().collect::<Vec<_>>();
+
+    let mut common_count = 0;
+    while common_count < path_components.len()
+        && common_count < base_components.len()
+        && path_components[common_count] == base_components[common_count]
+    {
+        common_count += 1;
+    }
+    if common_count == 0 {
+        return None;
+    }
+
+    let mut result = PathBuf::new();
+    for component in &base_components[common_count..] {
+        if matches!(component, Component::Normal(_)) {
+            result.push("..");
+        }
+    }
+    for component in &path_components[common_count..] {
+        result.push(component.as_os_str());
+    }
+    Some(result)
+}
+
+fn encrypt_age(plaintext: &[u8], identity: &age::x25519::Identity) -> Vec<u8> {
+    let recipient = identity.to_public();
+    let mut ciphertext = Vec::new();
+    let mut writer = age::Encryptor::with_recipients(std::iter::once(&recipient as _))
+        .expect("create age encryptor")
+        .wrap_output(&mut ciphertext)
+        .expect("wrap age output");
+    writer.write_all(plaintext).expect("write age plaintext");
+    writer.finish().expect("finish age encryption");
+    ciphertext
+}
 
 fn compile_root_with_geosite_matcher(
     value: Option<JsonValue>,
@@ -40,6 +107,7 @@ fn compile_root_with_geosite_matcher(
         profile_path: profile_path.to_string_lossy().into_owned(),
         overrides: Vec::new(),
         output_path: String::new(),
+        age_secret_key: None,
     };
 
     let result = compile_request(request, false);
@@ -93,7 +161,7 @@ fn yaml_override_is_applied_with_merge_order() {
         content: "proxies-end:\n  - name: B\n    type: http\n    server: two\n    port: 81\n"
             .to_string(),
     }];
-    let result = engine::apply_overrides(root, &overrides).expect("apply yaml override");
+    let result = engine::apply_overrides(root, &overrides, false).expect("apply yaml override");
     let proxies = result
         .root
         .get("proxies")
@@ -115,7 +183,7 @@ fn yaml_override_parse_error_includes_override_path() {
         content: "proxy-groups:\n  -\n  name: Proxy\n".to_string(),
     }];
 
-    let error = engine::apply_overrides(root, &overrides)
+    let error = engine::apply_overrides(root, &overrides, false)
         .expect_err("broken yaml override should fail");
     assert!(
         error.contains("/tmp/custom-routing.yaml"),
@@ -137,7 +205,7 @@ function main(profile) {
 "#
         .to_string(),
     }];
-    let result = engine::apply_overrides(root, &overrides).expect("apply js override");
+    let result = engine::apply_overrides(root, &overrides, false).expect("apply js override");
     assert_eq!(result.root["tun"]["enable"], JsonValue::Bool(false));
     assert_eq!(
         result.root["tun"]["stack"],
@@ -172,7 +240,7 @@ async function main(profile) {
         .to_string(),
     }];
 
-    let result = engine::apply_overrides(json!({ "mode": "rule" }), &overrides)
+    let result = engine::apply_overrides(json!({ "mode": "rule" }), &overrides, false)
         .expect("apply async js override");
     assert!(
         result.warnings.is_empty(),
@@ -235,7 +303,7 @@ async function main(profile) {{
         ),
     }];
 
-    let result = engine::apply_overrides(json!({ "mode": "rule" }), &overrides)
+    let result = engine::apply_overrides(json!({ "mode": "rule" }), &overrides, false)
         .expect("apply js fetch override");
     assert!(
         result.warnings.is_empty(),
@@ -272,7 +340,7 @@ fn js_override_failure_is_reported_as_warning_and_keeps_original_profile() {
     }];
 
     let result =
-        engine::apply_overrides(root.clone(), &overrides).expect("apply broken js override");
+        engine::apply_overrides(root.clone(), &overrides, false).expect("apply broken js override");
     assert_eq!(result.root, root);
     assert_eq!(result.warnings.len(), 1);
     assert!(result.warnings[0].contains("skip JS override"));
@@ -311,6 +379,7 @@ fn compile_request_emits_warning_for_empty_override_file() {
             ext: "js".to_string(),
         }],
         output_path: String::new(),
+        age_secret_key: None,
     };
 
     let result = compile_request(request, false).expect("compile request should succeed");
@@ -350,23 +419,11 @@ rule-providers:
     )
     .expect("write profile yaml");
 
-    let request = CompileRequest {
-        schema_version: REQUEST_SCHEMA_VERSION,
-        profile_uuid: "test-profile".to_string(),
-        profile_dir: temp_dir.to_string_lossy().into_owned(),
-        profile_path: profile_path.to_string_lossy().into_owned(),
-        overrides: Vec::new(),
-        output_path: String::new(),
-    };
+    let request = test_request(&temp_dir, &profile_path);
 
     let result = compile_request(request, false).expect("compile request should succeed");
     let root: JsonValue = serde_yaml::from_str(&result.final_yaml).expect("parse final yaml");
-    let expected_path = temp_dir
-        .join("providers")
-        .join("rules")
-        .join("geolocation-!cn.yaml")
-        .to_string_lossy()
-        .replace('\\', "/");
+    let expected_path = provider_path_from_runtime_home(&temp_dir, "geolocation-!cn.yaml");
     assert_eq!(
         root["rule-providers"]["geolocation-!cn"]["path"].as_str(),
         Some(expected_path.as_str())
@@ -405,23 +462,11 @@ rule-providers:
     )
     .expect("write profile yaml");
 
-    let request = CompileRequest {
-        schema_version: REQUEST_SCHEMA_VERSION,
-        profile_uuid: "test-profile".to_string(),
-        profile_dir: temp_dir.to_string_lossy().into_owned(),
-        profile_path: profile_path.to_string_lossy().into_owned(),
-        overrides: Vec::new(),
-        output_path: String::new(),
-    };
+    let request = test_request(&temp_dir, &profile_path);
 
     let result = compile_request(request, false).expect("compile request should succeed");
     let root: JsonValue = serde_yaml::from_str(&result.final_yaml).expect("parse final yaml");
-    let expected_path = temp_dir
-        .join("providers")
-        .join("rules")
-        .join("ads_domain.mrs")
-        .to_string_lossy()
-        .replace('\\', "/");
+    let expected_path = provider_path_from_runtime_home(&temp_dir, "ads_domain.mrs");
     assert_eq!(
         root["rule-providers"]["ads_domain"]["path"].as_str(),
         Some(expected_path.as_str())
@@ -460,23 +505,11 @@ rule-providers:
     )
     .expect("write profile yaml");
 
-    let request = CompileRequest {
-        schema_version: REQUEST_SCHEMA_VERSION,
-        profile_uuid: "test-profile".to_string(),
-        profile_dir: temp_dir.to_string_lossy().into_owned(),
-        profile_path: profile_path.to_string_lossy().into_owned(),
-        overrides: Vec::new(),
-        output_path: String::new(),
-    };
+    let request = test_request(&temp_dir, &profile_path);
 
     let result = compile_request(request, false).expect("compile request should succeed");
     let root: JsonValue = serde_yaml::from_str(&result.final_yaml).expect("parse final yaml");
-    let expected_path = temp_dir
-        .join("providers")
-        .join("rules")
-        .join("advertising.yaml")
-        .to_string_lossy()
-        .replace('\\', "/");
+    let expected_path = provider_path_from_runtime_home(&temp_dir, "advertising.yaml");
     assert_eq!(
         root["rule-providers"]["advertising"]["path"].as_str(),
         Some(expected_path.as_str())
@@ -500,7 +533,8 @@ fn compile_request_normalizes_absolute_provider_path_to_profile_scope() {
         .join("providers")
         .join("rules")
         .join("geolocation-!cn.yaml");
-    fs::create_dir_all(provider_path.parent().expect("provider parent")).expect("create provider dir");
+    fs::create_dir_all(provider_path.parent().expect("provider parent"))
+        .expect("create provider dir");
     fs::write(&provider_path, "payload").expect("write provider file");
 
     let profile_path = temp_dir.join("profile.yaml");
@@ -525,27 +559,69 @@ rule-providers:
     )
     .expect("write profile yaml");
 
-    let request = CompileRequest {
-        schema_version: REQUEST_SCHEMA_VERSION,
-        profile_uuid: "test-profile".to_string(),
-        profile_dir: temp_dir.to_string_lossy().into_owned(),
-        profile_path: profile_path.to_string_lossy().into_owned(),
-        overrides: Vec::new(),
-        output_path: String::new(),
-    };
+    let request = test_request(&temp_dir, &profile_path);
 
     let result = compile_request(request, false).expect("compile request should succeed");
     let root: JsonValue = serde_yaml::from_str(&result.final_yaml).expect("parse final yaml");
-    let expected_path = temp_dir
-        .join("providers")
-        .join("rules")
-        .join("geolocation-!cn.yaml")
-        .to_string_lossy()
-        .replace('\\', "/");
+    let expected_path = provider_path_from_runtime_home(&temp_dir, "geolocation-!cn.yaml");
     assert_eq!(
         root["rule-providers"]["geolocation-!cn"]["path"].as_str(),
         Some(expected_path.as_str())
     );
+
+    let _ = fs::remove_dir_all(&temp_dir);
+}
+
+#[test]
+fn compile_raw_request_decrypts_age_source_to_config_raw_json() {
+    let temp_dir = std::env::temp_dir().join(format!(
+        "yumebox-age-raw-test-{}",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("system time before unix epoch")
+            .as_nanos()
+    ));
+    fs::create_dir_all(&temp_dir).expect("create temp profile dir");
+
+    let identity = age::x25519::Identity::generate();
+    let plaintext = b"mode: rule\nmixed-port: 7890\n";
+    let profile_path = temp_dir.join("config.yaml");
+    fs::write(&profile_path, encrypt_age(plaintext, &identity)).expect("write encrypted profile");
+
+    let mut request = test_request(&temp_dir, &profile_path);
+    request.age_secret_key = Some(identity.to_string().expose_secret().to_string());
+
+    let result = compile_raw_request(request).expect("compile encrypted raw config");
+    assert!(result.success);
+    assert!(result.config_raw.trim_start().starts_with('{'));
+    assert!(!result.config_raw.contains("mode: rule"));
+
+    let raw: JsonValue = serde_json::from_str(&result.config_raw).expect("parse raw config json");
+    assert_eq!(raw["mode"], JsonValue::String("rule".to_string()));
+    assert_eq!(raw["mixed-port"], JsonValue::from(7890));
+
+    let _ = fs::remove_dir_all(&temp_dir);
+}
+
+#[test]
+fn compile_raw_request_requires_age_secret_key_for_encrypted_source() {
+    let temp_dir = std::env::temp_dir().join(format!(
+        "yumebox-age-missing-key-test-{}",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("system time before unix epoch")
+            .as_nanos()
+    ));
+    fs::create_dir_all(&temp_dir).expect("create temp profile dir");
+
+    let identity = age::x25519::Identity::generate();
+    let profile_path = temp_dir.join("config.yaml");
+    fs::write(&profile_path, encrypt_age(b"mode: rule\n", &identity))
+        .expect("write encrypted profile");
+
+    let request = test_request(&temp_dir, &profile_path);
+    let error = compile_raw_request(request).expect_err("missing key should fail");
+    assert!(error.contains("requires ageSecretKey"));
 
     let _ = fs::remove_dir_all(&temp_dir);
 }
