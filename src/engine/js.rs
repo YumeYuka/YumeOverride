@@ -67,8 +67,21 @@ pub fn apply_js_override(
             }
         }
         Err(err) => {
-            let _ = append_override_log(&log_path, "exception", &format!("脚本执行失败：{err}"));
-            warnings.push(format!("skip JS override {}: {err}", override_item.path));
+            let failure_message = if encrypted {
+                "脚本执行失败：(redacted, encrypted profile)".to_string()
+            } else {
+                format!("脚本执行失败：{err}")
+            };
+            let warning = if encrypted {
+                format!(
+                    "skip JS override {}: redacted error for encrypted profile",
+                    override_item.path
+                )
+            } else {
+                format!("skip JS override {}: {err}", override_item.path)
+            };
+            let _ = append_override_log(&log_path, "exception", &failure_message);
+            warnings.push(warning);
             JsOverrideOutcome {
                 root: original_root,
                 warnings,
@@ -359,15 +372,15 @@ const deepMerge = (target, other, isOverride = true) => {
   return target;
 };
 const formatLogValue = (value) => {
+  if (__encrypted === "true") {
+    return "(redacted, encrypted profile)";
+  }
   if (value instanceof Error) {
     return `${value.name}: ${value.message}`;
   }
   try {
     const serialized = JSON.stringify(value);
     const text = serialized === undefined ? String(value) : serialized;
-    if (__encrypted === "true" && text.length > 256) {
-      return text.slice(0, 256) + "...(truncated, encrypted profile)";
-    }
     return text;
   } catch (error) {
     return String(value);

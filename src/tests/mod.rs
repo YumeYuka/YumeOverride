@@ -354,6 +354,44 @@ fn js_override_failure_is_reported_as_warning_and_keeps_original_profile() {
 }
 
 #[test]
+fn js_override_logs_are_redacted_for_encrypted_profiles() {
+    let temp_dir = std::env::temp_dir().join(format!(
+        "yumebox-js-encrypted-log-test-{}",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("system time before unix epoch")
+            .as_nanos()
+    ));
+    fs::create_dir_all(&temp_dir).expect("create temp override dir");
+
+    let override_path = temp_dir.join("encrypted.js");
+    let overrides = vec![LoadedOverride {
+        path: override_path.to_string_lossy().into_owned(),
+        ext: "js".to_string(),
+        content: r#"
+function main(profile) {
+  console.log("profile", profile);
+  throw new Error(`secret mode ${profile.mode}`);
+}
+"#
+        .to_string(),
+    }];
+
+    let result = engine::apply_overrides(json!({ "mode": "secret-rule" }), &overrides, true)
+        .expect("apply encrypted js override");
+    assert_eq!(result.warnings.len(), 1);
+    assert!(!result.warnings[0].contains("secret-rule"));
+
+    let log_content =
+        fs::read_to_string(override_path.with_extension("log")).expect("read encrypted log");
+    assert!(log_content.contains("(redacted, encrypted profile)"));
+    assert!(!log_content.contains("secret-rule"));
+    assert!(!log_content.contains("secret mode"));
+
+    let _ = fs::remove_dir_all(&temp_dir);
+}
+
+#[test]
 fn compile_request_emits_warning_for_empty_override_file() {
     let temp_dir = std::env::temp_dir().join(format!(
         "yumebox-empty-override-test-{}",
