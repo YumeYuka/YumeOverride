@@ -15,20 +15,20 @@ use crate::model::{CompileRawResult, CompileRequest, CompileResult, REQUEST_SCHE
 struct CompiledRoot {
     root: JsonValue,
     warnings: Vec<String>,
-    encrypted: bool,
 }
 
 pub fn compile_request(
     request: CompileRequest,
     write_output: bool,
 ) -> Result<CompileResult, String> {
-    let compiled = compile_root(&request)?;
-    if compiled.encrypted {
+    if request_source_is_age_encrypted(&request)? {
         return Err(
             "encrypted profiles must use native compile raw output; YAML output is disabled"
                 .to_string(),
         );
     }
+
+    let compiled = compile_root(&request)?;
 
     let final_yaml = serde_yaml::to_string(&normalize::normalize_root(&compiled.root))
         .map_err(|err| format!("encode final yaml: {err}"))?;
@@ -103,11 +103,7 @@ fn compile_root(request: &CompileRequest) -> Result<CompiledRoot, String> {
     validate_root_config(object)?;
     patch::validate_provider_paths(object, profile_dir)?;
 
-    Ok(CompiledRoot {
-        root,
-        warnings,
-        encrypted,
-    })
+    Ok(CompiledRoot { root, warnings })
 }
 
 fn load_source_yaml(request: &CompileRequest) -> Result<(String, bool), String> {
@@ -122,6 +118,12 @@ fn load_source_yaml(request: &CompileRequest) -> Result<(String, bool), String> 
     let source_yaml =
         String::from_utf8(plaintext).map_err(|err| format!("source yaml is not utf-8: {err}"))?;
     Ok((source_yaml, encrypted))
+}
+
+fn request_source_is_age_encrypted(request: &CompileRequest) -> Result<bool, String> {
+    let source_bytes =
+        fs::read(&request.profile_path).map_err(|err| format!("read profile yaml: {err}"))?;
+    Ok(is_age_encrypted(&source_bytes))
 }
 
 fn is_age_encrypted(bytes: &[u8]) -> bool {
@@ -206,28 +208,49 @@ use std::ffi::{c_char, CStr, CString};
 
 /// # Safety
 /// Caller must pass a valid null-terminated UTF-8 JSON string.
-/// Returns the compiled RawConfig JSON as a Rust-allocated CString that must be
-/// freed with override_free_string.
+/// Returns a CompileRawResult JSON string as a Rust-allocated CString that must
+/// be freed with override_free_string.
 #[no_mangle]
 pub unsafe extern "C" fn override_compile_raw(request_json: *const c_char) -> *mut c_char {
     if request_json.is_null() {
-        return std::ptr::null_mut();
+        return compile_raw_error_result("read raw compile request: null pointer").into_raw();
     }
     let json_str = match CStr::from_ptr(request_json).to_str() {
         Ok(s) => s,
-        Err(_) => return std::ptr::null_mut(),
+        Err(err) => {
+            return compile_raw_error_result(format!("read raw compile request: {err}")).into_raw()
+        }
     };
     let request: CompileRequest = match serde_json::from_str(json_str) {
         Ok(r) => r,
-        Err(_) => return std::ptr::null_mut(),
+        Err(err) => {
+            return compile_raw_error_result(format!("decode raw compile request: {err}"))
+                .into_raw()
+        }
     };
-    let result = match compile_raw_request(request) {
-        Ok(result) => result,
-        Err(_) => return std::ptr::null_mut(),
+    let response = match compile_raw_request(request) {
+        Ok(result) => serde_json::to_string(&result)
+            .unwrap_or_else(|_| raw_error_json("raw compile result encode failed".to_string())),
+        Err(err) => raw_error_json(err),
     };
-    CString::new(result.config_raw)
-        .unwrap_or_default()
-        .into_raw()
+    CString::new(response).unwrap_or_default().into_raw()
+}
+
+fn compile_raw_error_result(message: impl Into<String>) -> CString {
+    CString::new(raw_error_json(message.into())).unwrap_or_default()
+}
+
+fn raw_error_json(message: String) -> String {
+    serde_json::to_string(&CompileRawResult {
+        success: false,
+        fingerprint: String::new(),
+        config_raw: String::new(),
+        warnings: Vec::new(),
+        error: Some(message),
+    })
+    .unwrap_or_else(|_| {
+        "{\"success\":false,\"fingerprint\":\"\",\"configRaw\":\"\",\"warnings\":[],\"error\":\"raw compile failed\"}".to_string()
+    })
 }
 
 /// # Safety

@@ -1,4 +1,5 @@
 use serde_json::{json, Value as JsonValue};
+use std::ffi::{CStr, CString};
 use std::fs;
 use std::io::{Read, Write};
 use std::net::TcpListener;
@@ -6,7 +7,9 @@ use std::path::{Path, PathBuf};
 use std::thread;
 
 use crate::compiler::normalize::normalize_root;
-use crate::compiler::{compile_raw_request, compile_request};
+use crate::compiler::{
+    compile_raw_request, compile_request, override_compile_raw, override_free_string,
+};
 use crate::engine;
 use crate::engine::yaml::add_yaml_tags_to_proxies_short_id;
 use crate::model::{CompileRequest, LoadedOverride, REQUEST_SCHEMA_VERSION};
@@ -628,6 +631,12 @@ fn compile_raw_request_decrypts_age_source_to_config_raw_json() {
 
     let mut request = test_request(&temp_dir, &profile_path);
     request.age_secret_key = Some(identity.to_string().expose_secret().to_string());
+    let override_path = temp_dir.join("override.yaml");
+    fs::write(&override_path, "mixed-port: 7891\n").expect("write yaml override");
+    request.overrides = vec![crate::model::OverrideSpec {
+        path: override_path.to_string_lossy().into_owned(),
+        ext: "yaml".to_string(),
+    }];
 
     let result = compile_raw_request(request).expect("compile encrypted raw config");
     assert!(result.success);
@@ -636,7 +645,43 @@ fn compile_raw_request_decrypts_age_source_to_config_raw_json() {
 
     let raw: JsonValue = serde_json::from_str(&result.config_raw).expect("parse raw config json");
     assert_eq!(raw["mode"], JsonValue::String("rule".to_string()));
-    assert_eq!(raw["mixed-port"], JsonValue::from(7890));
+    assert_eq!(raw["mixed-port"], JsonValue::from(7891));
+
+    let _ = fs::remove_dir_all(&temp_dir);
+}
+
+#[test]
+fn override_compile_raw_returns_structured_error_result() {
+    let temp_dir = std::env::temp_dir().join(format!(
+        "yumebox-age-raw-abi-error-test-{}",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("system time before unix epoch")
+            .as_nanos()
+    ));
+    fs::create_dir_all(&temp_dir).expect("create temp profile dir");
+
+    let identity = age::x25519::Identity::generate();
+    let profile_path = temp_dir.join("config.yaml");
+    fs::write(&profile_path, encrypt_age(b"mode: rule\n", &identity))
+        .expect("write encrypted profile");
+
+    let request = test_request(&temp_dir, &profile_path);
+    let request_json = serde_json::to_string(&request).expect("encode raw request");
+    let request_c = CString::new(request_json).expect("request has no nul bytes");
+
+    let ptr = unsafe { override_compile_raw(request_c.as_ptr()) };
+    assert!(!ptr.is_null());
+    let response = unsafe { CStr::from_ptr(ptr).to_string_lossy().into_owned() };
+    unsafe { override_free_string(ptr) };
+
+    let result: JsonValue = serde_json::from_str(&response).expect("parse raw abi result");
+    assert_eq!(result["success"], JsonValue::Bool(false));
+    assert!(result["error"]
+        .as_str()
+        .expect("error should be present")
+        .contains("requires ageSecretKey"));
+    assert_eq!(result["configRaw"], JsonValue::String(String::new()));
 
     let _ = fs::remove_dir_all(&temp_dir);
 }
@@ -684,10 +729,17 @@ fn compile_request_rejects_yaml_output_for_encrypted_source() {
     let mut request = test_request(&temp_dir, &profile_path);
     request.output_path = output_path.to_string_lossy().into_owned();
     request.age_secret_key = Some(identity.to_string().expose_secret().to_string());
+    let override_path = temp_dir.join("override.js");
+    fs::write(&override_path, "console.log('must-not-run');\n").expect("write js override");
+    request.overrides = vec![crate::model::OverrideSpec {
+        path: override_path.to_string_lossy().into_owned(),
+        ext: "js".to_string(),
+    }];
 
     let error = compile_request(request, true).expect_err("encrypted yaml output should fail");
     assert!(error.contains("YAML output is disabled"));
     assert!(!output_path.exists());
+    assert!(!override_path.with_extension("log").exists());
 
     let _ = fs::remove_dir_all(&temp_dir);
 }
