@@ -625,3 +625,31 @@ fn compile_raw_request_requires_age_secret_key_for_encrypted_source() {
 
     let _ = fs::remove_dir_all(&temp_dir);
 }
+
+#[test]
+fn compile_request_rejects_yaml_output_for_encrypted_source() {
+    let temp_dir = std::env::temp_dir().join(format!(
+        "yumebox-age-yaml-output-test-{}",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("system time before unix epoch")
+            .as_nanos()
+    ));
+    fs::create_dir_all(&temp_dir).expect("create temp profile dir");
+
+    let identity = age::x25519::Identity::generate();
+    let profile_path = temp_dir.join("config.yaml");
+    fs::write(&profile_path, encrypt_age(b"mode: rule\n", &identity))
+        .expect("write encrypted profile");
+
+    let output_path = temp_dir.join("runtime.yaml");
+    let mut request = test_request(&temp_dir, &profile_path);
+    request.output_path = output_path.to_string_lossy().into_owned();
+    request.age_secret_key = Some(identity.to_string().expose_secret().to_string());
+
+    let error = compile_request(request, true).expect_err("encrypted yaml output should fail");
+    assert!(error.contains("YAML output is disabled"));
+    assert!(!output_path.exists());
+
+    let _ = fs::remove_dir_all(&temp_dir);
+}

@@ -15,6 +15,7 @@ use crate::model::{CompileRawResult, CompileRequest, CompileResult, REQUEST_SCHE
 struct CompiledRoot {
     root: JsonValue,
     warnings: Vec<String>,
+    encrypted: bool,
 }
 
 pub fn compile_request(
@@ -22,6 +23,12 @@ pub fn compile_request(
     write_output: bool,
 ) -> Result<CompileResult, String> {
     let compiled = compile_root(&request)?;
+    if compiled.encrypted {
+        return Err(
+            "encrypted profiles must use native compile raw output; YAML output is disabled"
+                .to_string(),
+        );
+    }
 
     let final_yaml = serde_yaml::to_string(&normalize::normalize_root(&compiled.root))
         .map_err(|err| format!("encode final yaml: {err}"))?;
@@ -97,7 +104,11 @@ fn compile_root(request: &CompileRequest) -> Result<CompiledRoot, String> {
     validate_root_config(object)?;
     patch::validate_provider_paths(object, profile_dir)?;
 
-    Ok(CompiledRoot { root, warnings })
+    Ok(CompiledRoot {
+        root,
+        warnings,
+        encrypted,
+    })
 }
 
 fn load_source_yaml(request: &CompileRequest) -> Result<String, String> {
