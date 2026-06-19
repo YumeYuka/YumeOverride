@@ -28,7 +28,7 @@ pub fn patch_static_runtime(root: &mut JsonValue, profile_dir: &Path) {
     }
 
     let profile = ensure_object_field(object, "profile");
-    profile.insert("store-selected".to_string(), JsonValue::Bool(false));
+    profile.insert("store-selected".to_string(), JsonValue::Bool(true));
     profile.insert("store-fake-ip".to_string(), JsonValue::Bool(true));
 
     let append_system_dns = object
