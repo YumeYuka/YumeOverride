@@ -85,7 +85,7 @@ fn compile_root(request: &CompileRequest) -> Result<CompiledRoot, String> {
     let mut root: JsonValue = serde_json::to_value(source_value)
         .map_err(|err| format!("convert source yaml to json: {err}"))?;
 
-    let loaded_overrides = load_overrides(&request.overrides)?;
+    let loaded_overrides = load_overrides(&request.overrides, encrypted)?;
     let mut warnings = loaded_overrides.warnings;
     let apply_result = engine::apply_overrides(root, &loaded_overrides.items, encrypted)?;
     root = apply_result.root;

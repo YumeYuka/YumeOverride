@@ -384,6 +384,7 @@ function main(profile) {
         .expect("apply encrypted js override");
     assert_eq!(result.warnings.len(), 1);
     assert!(!result.warnings[0].contains("secret-rule"));
+    assert!(!result.warnings[0].contains(&override_path.to_string_lossy().to_string()));
 
     let log_content =
         fs::read_to_string(override_path.with_extension("log")).expect("read encrypted log");
@@ -646,6 +647,39 @@ fn compile_raw_request_decrypts_age_source_to_config_raw_json() {
     let raw: JsonValue = serde_json::from_str(&result.config_raw).expect("parse raw config json");
     assert_eq!(raw["mode"], JsonValue::String("rule".to_string()));
     assert_eq!(raw["mixed-port"], JsonValue::from(7891));
+
+    let _ = fs::remove_dir_all(&temp_dir);
+}
+
+#[test]
+fn encrypted_empty_override_warning_redacts_override_path() {
+    let temp_dir = std::env::temp_dir().join(format!(
+        "yumebox-age-empty-override-test-{}",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("system time before unix epoch")
+            .as_nanos()
+    ));
+    fs::create_dir_all(&temp_dir).expect("create temp profile dir");
+
+    let identity = age::x25519::Identity::generate();
+    let profile_path = temp_dir.join("config.yaml");
+    fs::write(&profile_path, encrypt_age(b"mode: rule\n", &identity))
+        .expect("write encrypted profile");
+    let empty_override_path = temp_dir.join("empty.js");
+    fs::write(&empty_override_path, "  \n").expect("write empty override");
+
+    let mut request = test_request(&temp_dir, &profile_path);
+    request.age_secret_key = Some(identity.to_string().expose_secret().to_string());
+    request.overrides = vec![crate::model::OverrideSpec {
+        path: empty_override_path.to_string_lossy().into_owned(),
+        ext: "js".to_string(),
+    }];
+
+    let result = compile_raw_request(request).expect("compile encrypted raw config");
+    assert_eq!(result.warnings.len(), 1);
+    assert!(result.warnings[0].contains("skip empty override file"));
+    assert!(!result.warnings[0].contains(&empty_override_path.to_string_lossy().to_string()));
 
     let _ = fs::remove_dir_all(&temp_dir);
 }

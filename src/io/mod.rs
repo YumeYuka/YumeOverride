@@ -8,14 +8,30 @@ pub struct LoadedOverrides {
     pub warnings: Vec<String>,
 }
 
-pub fn load_overrides(overrides: &[OverrideSpec]) -> Result<LoadedOverrides, String> {
+pub fn load_overrides(
+    overrides: &[OverrideSpec],
+    encrypted: bool,
+) -> Result<LoadedOverrides, String> {
     let mut loaded = Vec::new();
     let mut warnings = Vec::new();
     for override_spec in overrides {
-        let content = fs::read_to_string(&override_spec.path)
-            .map_err(|err| format!("read override file {}: {err}", override_spec.path))?;
+        let content = fs::read_to_string(&override_spec.path).map_err(|err| {
+            if encrypted {
+                format!("read override file failed for encrypted profile: {err}")
+            } else {
+                format!("read override file {}: {err}", override_spec.path)
+            }
+        })?;
         if content.trim().is_empty() {
-            warnings.push(format!("skip empty override file: {}", override_spec.path));
+            let warning = if encrypted {
+                format!(
+                    "skip empty override file for encrypted profile: ext={}",
+                    override_spec.ext
+                )
+            } else {
+                format!("skip empty override file: {}", override_spec.path)
+            };
+            warnings.push(warning);
             continue;
         }
         loaded.push(LoadedOverride {

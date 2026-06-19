@@ -50,10 +50,15 @@ pub fn apply_js_override(
     let log_path = override_log_path(&override_item.path);
     let mut warnings = Vec::new();
     if let Err(err) = reset_override_log(&log_path) {
-        warnings.push(format!(
-            "initialize JS override log {} failed: {err}",
-            log_path.to_string_lossy()
-        ));
+        let warning = if encrypted {
+            format!("initialize JS override log failed for encrypted profile: {err}")
+        } else {
+            format!(
+                "initialize JS override log {} failed: {err}",
+                log_path.to_string_lossy()
+            )
+        };
+        warnings.push(warning);
     }
     let _ = append_override_log(&log_path, "info", "开始执行脚本");
 
@@ -73,10 +78,7 @@ pub fn apply_js_override(
                 format!("脚本执行失败：{err}")
             };
             let warning = if encrypted {
-                format!(
-                    "skip JS override {}: redacted error for encrypted profile",
-                    override_item.path
-                )
+                "skip JS override: redacted error for encrypted profile".to_string()
             } else {
                 format!("skip JS override {}: {err}", override_item.path)
             };
