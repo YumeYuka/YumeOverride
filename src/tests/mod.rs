@@ -152,6 +152,81 @@ fn compile_request_rejects_invalid_geosite_matcher() {
     );
 }
 
+fn compile_raw_from_yaml(source_yaml: &str) -> Result<JsonValue, String> {
+    let temp_dir = std::env::temp_dir().join(format!(
+        "yumebox-merge-key-test-{}",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("system time before unix epoch")
+            .as_nanos()
+    ));
+    fs::create_dir_all(&temp_dir).expect("create temp profile dir");
+    let profile_path = temp_dir.join("config.yaml");
+    fs::write(&profile_path, source_yaml).expect("write profile yaml");
+
+    let result = compile_raw_request(test_request(&temp_dir, &profile_path));
+    let _ = fs::remove_dir_all(&temp_dir);
+    result.map(|raw| serde_json::from_str(&raw.config_raw).expect("parse config_raw json"))
+}
+
+#[test]
+fn yaml_merge_keys_are_expanded_in_compiled_config() {
+    // Anchors supply `type`/`behavior`/`format` via `<<: *anchor`, exactly like a real profile.
+    let source = r#"
+mode: rule
+anchors:
+  proxy_first: &proxy_first {type: select, proxies: [DIRECT]}
+  domain: &domain {type: http, interval: 86400, behavior: domain, format: mrs}
+proxy-groups:
+  - {name: YouTube, <<: *proxy_first}
+  - {name: Apple, type: url-test, <<: *proxy_first}
+rule-providers:
+  youtube_domain: {<<: *domain, url: "https://example.invalid/youtube.mrs"}
+"#;
+    let root = compile_raw_from_yaml(source).expect("compile profile with merge keys");
+
+    let groups = root
+        .get("proxy-groups")
+        .and_then(JsonValue::as_array)
+        .expect("proxy-groups array");
+
+    // Merge supplies `type` when the group has no explicit type.
+    let youtube = &groups[0];
+    assert_eq!(
+        youtube.get("type").and_then(JsonValue::as_str),
+        Some("select"),
+        "YouTube must inherit type from the anchor"
+    );
+    assert!(
+        youtube.get("<<").is_none(),
+        "merge key must be expanded, not left as a literal `<<` key"
+    );
+
+    // Explicit field wins over the merged value.
+    let apple = &groups[1];
+    assert_eq!(
+        apple.get("type").and_then(JsonValue::as_str),
+        Some("url-test"),
+        "explicit type must win over the merged anchor type"
+    );
+
+    // Merge also applies to rule-provider mapping values.
+    let provider = root
+        .get("rule-providers")
+        .and_then(|providers| providers.get("youtube_domain"))
+        .expect("rule provider");
+    assert_eq!(
+        provider.get("behavior").and_then(JsonValue::as_str),
+        Some("domain"),
+        "rule provider must inherit behavior from the anchor"
+    );
+    assert_eq!(
+        provider.get("format").and_then(JsonValue::as_str),
+        Some("mrs")
+    );
+    assert!(provider.get("<<").is_none());
+}
+
 #[test]
 fn yaml_override_is_applied_with_merge_order() {
     let root = json!({

@@ -80,8 +80,15 @@ fn compile_root(request: &CompileRequest) -> Result<CompiledRoot, String> {
     }
 
     let (source_yaml, encrypted) = load_source_yaml(request)?;
-    let source_value: YamlValue =
+    let mut source_value: YamlValue =
         serde_yaml::from_str(&source_yaml).map_err(|err| format!("parse source yaml: {err}"))?;
+    // serde_yaml resolves `&`/`*` anchor aliases but does NOT expand the YAML merge key
+    // (`<<`). Without this, every `<<: *anchor` becomes a literal `"<<"` key and the
+    // inherited fields (`type`, `behavior`, …) never reach mihomo. apply_merge walks the
+    // whole tree and uses explicit-key-wins semantics.
+    source_value
+        .apply_merge()
+        .map_err(|err| format!("apply yaml merge keys: {err}"))?;
     let mut root: JsonValue = serde_json::to_value(source_value)
         .map_err(|err| format!("convert source yaml to json: {err}"))?;
 

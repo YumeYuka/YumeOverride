@@ -3,8 +3,11 @@ use serde_yaml::Value as YamlValue;
 
 pub fn parse_yaml_override(content: &str) -> Result<JsonValue, String> {
     let processed_content = add_yaml_tags_to_proxies_short_id(content, false);
-    let value: YamlValue =
+    let mut value: YamlValue =
         serde_yaml::from_str(&processed_content).map_err(|err| err.to_string())?;
+    // Expand YAML merge keys (`<<: *anchor`) before flattening to JSON; serde_yaml does not
+    // do this automatically and JSON has no merge-key concept to recover it later.
+    value.apply_merge().map_err(|err| err.to_string())?;
     serde_json::to_value(value).map_err(|err| err.to_string())
 }
 
