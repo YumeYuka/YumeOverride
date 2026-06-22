@@ -11,19 +11,10 @@ pub extern "system" fn Java_com_github_yumelira_yumebox_core_bridge_Bridge_nativ
     _bridge: JObject,
     request_json: JString,
 ) -> jstring {
-    handle_compile_request(&mut env, request_json, false)
+    handle_compile_request(&mut env, request_json)
 }
 
-#[no_mangle]
-pub extern "system" fn Java_com_github_yumelira_yumebox_core_bridge_Bridge_nativeCompileToFile(
-    mut env: JNIEnv,
-    _bridge: JObject,
-    request_json: JString,
-) -> jstring {
-    handle_compile_request(&mut env, request_json, true)
-}
-
-fn handle_compile_request(env: &mut JNIEnv, request_json: JString, write_output: bool) -> jstring {
+fn handle_compile_request(env: &mut JNIEnv, request_json: JString) -> jstring {
     let payload = match env.get_string(&request_json) {
         Ok(value) => value.to_string_lossy().into_owned(),
         Err(err) => {
@@ -33,7 +24,7 @@ fn handle_compile_request(env: &mut JNIEnv, request_json: JString, write_output:
     };
 
     let result = match serde_json::from_str::<CompileRequest>(&payload) {
-        Ok(request) => compile_request(request, write_output),
+        Ok(request) => compile_request(request, false),
         Err(err) => Err(format!("decode override request: {err}")),
     };
 
